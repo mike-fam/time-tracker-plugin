@@ -129,6 +129,10 @@ export TIME_TRACKER_CHECK_INTERVAL=600
 
 # Idle threshold in seconds (default: 1800 = 30 minutes)
 export TIME_TRACKER_IDLE_THRESHOLD=1800
+
+# Duration merge threshold in seconds (default: 1800 = 30 minutes)
+# Activities within this window will be merged into continuous durations
+export TIME_TRACKER_DURATION_MERGE_THRESHOLD=1800
 ```
 
 ### Example Configuration
@@ -142,6 +146,9 @@ export TIME_TRACKER_CHECK_INTERVAL=300
 # Consider idle after 15 minutes instead of 30
 export TIME_TRACKER_IDLE_THRESHOLD=900
 
+# Merge durations within 15 minutes instead of 30
+export TIME_TRACKER_DURATION_MERGE_THRESHOLD=900
+
 plugins=(... time-tracker)
 ```
 
@@ -150,20 +157,33 @@ plugins=(... time-tracker)
 1. **Initialization**: When you open a terminal in a git repository, the plugin initializes tracking
 2. **Periodic Checks**: Every 10 minutes (configurable), the plugin checks if you're still active
 3. **Idle Detection**: If no commands have been run for 30 minutes (configurable), time is not recorded
-4. **Data Storage**: Time entries are appended to repository-specific data files in `~/.time-tracker-data/`
-5. **Multiple Sessions**: Each terminal session tracks independently; data is aggregated when viewing stats
+4. **Duration Merging**: If a new activity occurs within 30 minutes of the last duration end, they are merged into one continuous duration
+5. **Data Storage**: Time durations are stored as JSON objects in repository-specific data files in `~/.time-tracker-data/`
+6. **Multiple Sessions**: Each terminal session tracks independently; durations are merged when they overlap
 
 ### Data Format
 
-Data is stored in pipe-delimited format:
+Data is stored in JSON format with duration-based tracking:
 
-```
-2025-12-01T10:30:00Z|/path/to/repo|main|600
-2025-12-01T10:40:00Z|/path/to/repo|main|600
-2025-12-01T10:50:00Z|/path/to/repo|feature/new|600
+```json
+{
+  "repository": "/path/to/repo",
+  "durations": [
+    {
+      "branch": "main",
+      "start": "2025-12-01T10:00:00Z",
+      "end": "2025-12-01T11:30:00Z"
+    },
+    {
+      "branch": "feature/new",
+      "start": "2025-12-01T14:00:00Z",
+      "end": "2025-12-01T15:20:00Z"
+    }
+  ]
+}
 ```
 
-Format: `timestamp|repository_path|branch_name|seconds`
+Each duration represents a continuous work session on a branch. If you return to work within 30 minutes, the duration is extended rather than creating a new entry.
 
 ## Example Output
 
@@ -177,6 +197,30 @@ main                                        15h 40m
 feature/user-authentication                  8h 20m
 feature/dark-mode                           3h 10m
 bugfix/login-issue                          1h 30m
+```
+
+### Sample Export JSON
+
+```json
+{
+  "exported": "2025-12-01T14:30:00Z",
+  "repositories": {
+    "/Users/john/projects/my-app": {
+      "durations": [
+        {
+          "branch": "main",
+          "start": "2025-12-01T09:00:00Z",
+          "end": "2025-12-01T12:30:00Z"
+        },
+        {
+          "branch": "feature/user-authentication",
+          "start": "2025-12-01T13:00:00Z",
+          "end": "2025-12-01T16:45:00Z"
+        }
+      ]
+    }
+  }
+}
 ```
 
 ## Privacy & Data
