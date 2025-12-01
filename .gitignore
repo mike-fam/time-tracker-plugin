@@ -1,0 +1,13 @@
+# Ignore tracking data
+.time-tracker-data/
+*.dat
+
+# macOS
+.DS_Store
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
