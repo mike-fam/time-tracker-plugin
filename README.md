@@ -19,7 +19,7 @@ A lightweight and efficient oh-my-zsh plugin that automatically tracks time spen
 1. Clone this repository into your Oh My Zsh custom plugins directory:
 
 ```bash
-git clone https://github.com/yourusername/time-tracker.git ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/time-tracker
+git clone https://github.com/mike-fam/time-tracker-plugin.git ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/time-tracker
 ```
 
 2. Add `time-tracker` to your plugins array in `~/.zshrc`:
@@ -39,7 +39,7 @@ source ~/.zshrc
 1. Clone the repository:
 
 ```bash
-git clone https://github.com/yourusername/time-tracker.git ~/time-tracker
+git clone https://github.com/mike-fam/time-tracker-plugin.git ~/time-tracker
 ```
 
 2. Source the plugin in your `~/.zshrc`:

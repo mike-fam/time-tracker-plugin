@@ -3,7 +3,7 @@
 # Tracks time spent on git branches across multiple repositories
 
 # Configuration
-TIME_TRACKER_DATA_DIR="${TIME_TRACKER_DATA_DIR:-${HOME}/.time-tracker-data}"
+TIME_TRACKER_DATA_FILE="${TIME_TRACKER_DATA_FILE:-${HOME}/.time-tracker-data.json}"
 TIME_TRACKER_CHECK_INTERVAL="${TIME_TRACKER_CHECK_INTERVAL:-600}" # 10 minutes in seconds
 TIME_TRACKER_IDLE_THRESHOLD="${TIME_TRACKER_IDLE_THRESHOLD:-1800}" # 30 minutes in seconds
 TIME_TRACKER_DURATION_MERGE_THRESHOLD="${TIME_TRACKER_DURATION_MERGE_THRESHOLD:-1800}" # 30 minutes in seconds
@@ -19,8 +19,12 @@ function __time_tracker_init() {
         return 1
     fi
     
-    # Create data directory if it doesn't exist
-    [[ ! -d "$TIME_TRACKER_DATA_DIR" ]] && mkdir -p "$TIME_TRACKER_DATA_DIR"
+    # Create data file if it doesn't exist
+    if [[ ! -f "$TIME_TRACKER_DATA_FILE" ]]; then
+        local data_dir=$(dirname "$TIME_TRACKER_DATA_FILE")
+        [[ ! -d "$data_dir" ]] && mkdir -p "$data_dir"
+        echo '{"repositories":{}}' | jq '.' > "$TIME_TRACKER_DATA_FILE"
+    fi
     
     # Initialize timestamps
     TIME_TRACKER_LAST_CHECK=$(date +%s)
@@ -40,16 +44,9 @@ function __time_tracker_get_branch() {
     git rev-parse --abbrev-ref HEAD 2>/dev/null
 }
 
-# Get data file path for current repository
+# Get the shared data file path
 function __time_tracker_get_data_file() {
-    local repo_id="$1"
-    if [[ -z "$repo_id" ]]; then
-        return 1
-    fi
-    
-    # Create a safe filename from repo path
-    local safe_name=$(echo "$repo_id" | sed 's/[^a-zA-Z0-9]/_/g')
-    echo "${TIME_TRACKER_DATA_DIR}/${safe_name}.dat"
+    echo "$TIME_TRACKER_DATA_FILE"
 }
 
 # Check if terminal is idle
@@ -72,7 +69,7 @@ function __time_tracker_record() {
     local branch=$(__time_tracker_get_branch)
     [[ -z "$branch" ]] && return
     
-    local data_file=$(__time_tracker_get_data_file "$repo_id")
+    local data_file=$(__time_tracker_get_data_file)
     [[ -z "$data_file" ]] && return
     
     local current_time=$(date +%s)
@@ -92,14 +89,10 @@ function __time_tracker_record() {
     if [[ $time_delta -lt 3600 ]]; then  # Less than 1 hour
         local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
         
-        # Initialize file if it doesn't exist
-        if [[ ! -f "$data_file" ]]; then
-            echo '{"repository":"'"$repo_id"'","durations":[]}' | jq '.' > "$data_file"
-        fi
-        
-        # Use jq to add or merge duration
+        # Use jq to add or merge duration in the single data file
         local temp_file=$(mktemp)
-        jq --arg branch "$branch" \
+        jq --arg repo "$repo_id" \
+           --arg branch "$branch" \
            --arg start "$timestamp" \
            --argjson seconds "$time_delta" \
            --argjson threshold "$TIME_TRACKER_DURATION_MERGE_THRESHOLD" \
@@ -108,8 +101,13 @@ function __time_tracker_record() {
            def parse_time: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
            def to_iso: strftime("%Y-%m-%dT%H:%M:%SZ");
            
-           # Find the last duration for this branch
-           .durations as $durations |
+           # Ensure repository exists
+           if .repositories[$repo] == null then
+               .repositories[$repo] = {"durations": []}
+           end |
+           
+           # Find the last duration for this branch in this repo
+           .repositories[$repo].durations as $durations |
            ($durations | map(select(.branch == $branch)) | last) as $last_duration |
            
            if $last_duration then
@@ -120,7 +118,7 @@ function __time_tracker_record() {
                
                if $gap <= $threshold then
                    # Merge: extend the last duration
-                   .durations |= map(
+                   .repositories[$repo].durations |= map(
                        if . == $last_duration then
                            .end = ($new_start + $seconds | to_iso)
                        else
@@ -129,7 +127,7 @@ function __time_tracker_record() {
                    )
                else
                    # Create new duration
-                   .durations += [{
+                   .repositories[$repo].durations += [{
                        "branch": $branch,
                        "start": $start,
                        "end": (($start | parse_time) + $seconds | to_iso)
@@ -137,7 +135,7 @@ function __time_tracker_record() {
                end
            else
                # No previous duration for this branch, create new
-               .durations += [{
+               .repositories[$repo].durations += [{
                    "branch": $branch,
                    "start": $start,
                    "end": (($start | parse_time) + $seconds | to_iso)
@@ -204,18 +202,18 @@ function time-tracker-stats() {
         fi
     fi
     
-    # Process data files
+    # Process data file
+    local data_file=$(__time_tracker_get_data_file)
+    if [[ ! -f "$data_file" ]]; then
+        echo "No tracking data available."
+        return 0
+    fi
+    
     if $show_all; then
         # Show stats for all repositories
-        __time_tracker_process_all_stats
+        __time_tracker_process_all_stats "$data_file"
     else
         # Show stats for current repository
-        local data_file=$(__time_tracker_get_data_file "$target_repo")
-        if [[ ! -f "$data_file" ]]; then
-            echo "No tracking data available for this repository."
-            return 0
-        fi
-        
         __time_tracker_process_repo_stats "$data_file" "$target_repo" "$target_branch"
     fi
 }
@@ -229,10 +227,11 @@ function __time_tracker_process_repo_stats() {
     echo "Repository: $repo_path"
     echo ""
     
-    # Use jq to aggregate durations by branch
-    local stats=$(jq -r --arg branch "$filter_branch" '
+    # Use jq to aggregate durations by branch from single file
+    local stats=$(jq -r --arg repo "$repo_path" --arg branch "$filter_branch" '
         def parse_time: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
         
+        .repositories[$repo] // {"durations": []} |
         .durations |
         (if $branch != "" then map(select(.branch == $branch)) else . end) |
         group_by(.branch) |
@@ -262,29 +261,24 @@ function __time_tracker_process_repo_stats() {
 
 # Process stats for all repositories
 function __time_tracker_process_all_stats() {
+    local data_file="$1"
+    
     echo "Time tracking statistics (all repositories)"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
     
-    local found_data=false
+    # Get all repository paths from single file
+    local repos=$(jq -r '.repositories | keys[]' "$data_file" 2>/dev/null)
     
-    for data_file in "$TIME_TRACKER_DATA_DIR"/*.dat(N); do
-        if [[ ! -f "$data_file" ]]; then
-            continue
-        fi
-        
-        found_data=true
-        
-        # Extract repo path from JSON
-        local repo_path=$(jq -r '.repository' "$data_file")
-        
+    if [[ -z "$repos" ]]; then
+        echo "No tracking data available."
+        return
+    fi
+    
+    echo "$repos" | while read -r repo_path; do
         __time_tracker_process_repo_stats "$data_file" "$repo_path" ""
         echo ""
     done
-    
-    if ! $found_data; then
-        echo "No tracking data available."
-    fi
 }
 
 # Clear tracking data
@@ -311,6 +305,8 @@ function time-tracker-clear() {
         esac
     done
     
+    local data_file=$(__time_tracker_get_data_file)
+    
     if $clear_all; then
         if [[ "$confirm" != "y" ]]; then
             echo -n "Clear all tracking data? [y/N] "
@@ -318,7 +314,7 @@ function time-tracker-clear() {
         fi
         
         if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
-            rm -f "$TIME_TRACKER_DATA_DIR"/*.dat
+            echo '{"repositories":{}}' | jq '.' > "$data_file"
             echo "All tracking data cleared."
         else
             echo "Cancelled."
@@ -330,15 +326,14 @@ function time-tracker-clear() {
             return 1
         fi
         
-        local data_file=$(__time_tracker_get_data_file "$repo_id")
-        
         if [[ "$confirm" != "y" ]]; then
             echo -n "Clear tracking data for this repository? [y/N] "
             read confirm
         fi
         
         if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
-            rm -f "$data_file"
+            local temp_file=$(mktemp)
+            jq --arg repo "$repo_id" 'del(.repositories[$repo])' "$data_file" > "$temp_file" && mv "$temp_file" "$data_file"
             echo "Tracking data cleared for this repository."
         else
             echo "Cancelled."
@@ -356,26 +351,16 @@ function time-tracker-export() {
         return 1
     fi
     
+    local data_file=$(__time_tracker_get_data_file)
+    if [[ ! -f "$data_file" ]]; then
+        echo "No tracking data available to export."
+        return 1
+    fi
+    
     local exported_time=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
     
-    # Build repositories object using jq
-    local repos_json='{}'
-    
-    for data_file in "$TIME_TRACKER_DATA_DIR"/*.dat(N); do
-        if [[ ! -f "$data_file" ]]; then
-            continue
-        fi
-        
-        local repo_path=$(jq -r '.repository' "$data_file")
-        local repo_data=$(jq '{durations}' "$data_file")
-        
-        repos_json=$(echo "$repos_json" | jq --arg repo "$repo_path" --argjson data "$repo_data" \
-            '.[$repo] = $data')
-    done
-    
-    # Create final JSON
-    jq -n --arg exported "$exported_time" --argjson repos "$repos_json" \
-        '{exported: $exported, repositories: $repos}' > "$output_file"
+    # Add exported timestamp to data
+    jq --arg exported "$exported_time" '{exported: $exported, repositories}' "$data_file" > "$output_file"
     
     echo "Data exported to: $output_file"
 }
